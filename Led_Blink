@@ -1,0 +1,58 @@
+// ;==============================
+// ; Title: BlinkModeSerial_ESP8266
+// ;==============================
+// ; Program Detail:
+// ;   Purpose: Blink an LED at two selectable speeds via Serial commands.
+// ;   Inputs:  'A' (fast), 'B' (slow), 'S' (stop).
+// ;   Outputs: LED on D6 (GPIO12) blinks at chosen rate.
+// ;   Date:    2025-11-09
+// ;   Compiler: PlatformIO (framework=arduino) / ESP8266 core
+// ;   Author:  Mark P.
+// ;   Versions: V1.0 – initial release.
+// ; File Dependencies: Arduino.h
+// ;==============================
+
+#include <Arduino.h>
+
+#ifndef D6
+  #define D6 12    // fallback: NodeMCU mapping
+#endif
+
+const int LED_PIN = D6;
+unsigned long interval   = 500;
+unsigned long lastToggle = 0;
+bool          ledState   = LOW;
+
+void setup() {
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, ledState);
+
+  Serial.begin(115200);
+  Serial.println();
+  Serial.println("Type 'A' FAST (100 ms), 'B' SLOW (500 ms), 'S' stop.");
+}
+
+void loop() {
+  if (Serial.available()) {
+    char c = Serial.read();   // 'char' = single-byte character
+    c = toupper(c);           // makes input case-insensitive
+
+    if (c == 'A') { interval = 100; Serial.println("FAST"); }
+    else if (c == 'B') { interval = 500; Serial.println("SLOW"); }
+    else if (c == 'S') {
+      interval = 0; ledState = LOW; digitalWrite(LED_PIN, ledState);
+      Serial.println("Stopped: LED OFF");
+    } else {
+      Serial.println("Use 'A', 'B', or 'S'.");
+    }
+  }
+
+  if (interval > 0) {
+    unsigned long now = millis();
+    if (now - lastToggle >= interval) {
+      lastToggle = now;
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState);
+    }
+  }
+}
