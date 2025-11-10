@@ -1,0 +1,128 @@
+/*====================================================
+; Title: ESP8266_MAX4466_Sound_Level_Meter
+;====================================================
+; Program Detail: Measures the sound level.
+;----------------------------------------------------
+; Purpose: 
+;   Measure the AC RMS sound level from a MAX4466 microphone module
+;   (through a 100k/47k voltage divider into ESP8266 A0) and output. 
+;   a dB-like level using a simple calibration against a phone SPL app.
+; The 47k resistor goes to GND. 100K resistor is attached to the mic output.
+;
+; Inputs:
+;   - Analog A0 (ESP8266 ADC0): MAX4466 OUT via 100k/47k divider
+;   - User-set constants: REF_RMS and CAL_DB_AT_REF (calibration)
+;
+; Outputs:
+;   - Serial (115200 baud): Vrms (V), DC mean (V), estimated dB, label
+;
+; Date: 2025-11-08  
+; Compiler / Toolchain:
+;   - PlatformIO (platform = espressif8266, framework = arduino)
+;   - Arduino core for ESP8266
+;
+; Author: Mark P.
+;
+; Versions:
+;   V1 - Initial ESP8266 two-pass RMS with calibration and classification
+;   V2 - Documentation header added; clarified divider scaling and comments
+;====================================================
+; File Dependencies:
+;   - Arduino core headers (Arduino.h)
+;   - C math library (math.h)
+;   (No third-party libraries required) 
+;====================================================*/
+
+
+// ================= Libraries & Dependencies =================
+#include <Arduino.h>   // Serial, analogRead, timing, etc.
+#include <math.h>      // sqrt, log10f, isfinite
+
+
+// ================== User Settings ==================
+const int MIC_PIN = A0;           // ESP8266 has a single ADC pin (A0 / ADC0)
+uint32_t SAMPLES = 20;          // samples per measurement window (↑ = smoother, slower)
+const uint32_t TARGET_FS = 5000;  // target sample rate in Hz (≈5 kHz realistic on ESP8266)
+
+// ----- Calibration (match a phone SPL app) -----
+// At a known sound level (phone SPL), note the Vrms printed by this sketch.
+// Set REF_RMS to that Vrms and CAL_DB_AT_REF to the phone's dB reading.
+float REF_RMS       = 0.0045f;    // measured Vrms at reference point (example)
+float CAL_DB_AT_REF = 26.0f;      // phone dB at that moment (example)
+
+// ----- Classification thresholds (dB labels) -----
+float THRESHOLDS_DB[3] = { 35.0f, 60.0f, 75.0f }; // Quiet <35, Normal 35–60, Loud 60–75, Very Loud >75
+
+
+// ================== Helper: ADC scaling ==================
+// ESP8266 ADC is 10-bit (0..1023) and expects ~0..1.0 V at A0.
+// With a 100k/47k divider, the mic's 0..3.3 V becomes ~0..1.05 V at A0.
+// We convert back to the mic-side "0..3.3 V" scale so Vrms is intuitive.
+static inline float adcToVolts(uint16_t raw) {
+  return (3.3f * (float)raw / 1023.0f);
+}
+
+
+// ================== Main Program ==================
+void setup() {
+  Serial.begin(115200);         // Serial console for output
+  delay(300);                   // small settle delay
+
+  Serial.println("\n=== ESP8266 + MAX4466 Sound Level Meter ===");
+  Serial.println("Wiring: MAX4466 OUT -> 100k/47k divider -> A0, VCC=3.3V, GND=GND");
+  Serial.println("Calibrate REF_RMS and CAL_DB_AT_REF using a phone SPL app.");
+  Serial.println("-----------------------------------------------------------");
+}
+
+void loop() {
+  // -------- Pass 1: measure DC mean (offset around ~1.65 V) --------
+  double sumV = 0.0;
+  for (int i = 0; i < SAMPLES; i++) {
+    uint16_t raw = analogRead(MIC_PIN);   // single ADC sample (0..1023)
+    sumV += adcToVolts(raw);              // accumulate mic-side volts
+    delayMicroseconds(1000000UL / TARGET_FS); // try to keep ~TARGET_FS
+  }
+  float meanV = (float)(sumV / (double)SAMPLES); // average DC level
+
+  // -------- Pass 2: compute AC RMS around the mean --------
+  // Vrms = sqrt( mean( (v - meanV)^2 ) )
+  double sumSq = 0.0;
+  for (int i = 0; i < SAMPLES; i++) {
+    uint16_t raw = analogRead(MIC_PIN);
+    float v = adcToVolts(raw) - meanV;   // AC-coupled sample
+    sumSq += v * v;                      // accumulate squared deviation
+    delayMicroseconds(1000000UL / TARGET_FS);
+  }
+  float Vrms = sqrt(sumSq / SAMPLES);    // AC RMS voltage
+
+  // -------- Convert to dB (relative to calibration) --------
+  // dB ≈ CAL_DB_AT_REF + 20*log10(Vrms / REF_RMS)
+  const float MIN_V = 1e-6f;                               // avoid log(0)
+  float ratio = fmaxf(Vrms, MIN_V) / fmaxf(REF_RMS, MIN_V);
+  float dB = CAL_DB_AT_REF + 20.0f * log10f(ratio);
+  if (!isfinite(dB)) dB = 0.0f;                            // safety guard
+
+  // -------- Classification label --------
+  const char* label = "Very Loud 🔥";
+  if (dB < THRESHOLDS_DB[0])      label = "Quiet 💤";
+  else if (dB < THRESHOLDS_DB[1]) label = "Normal 🗣️";
+  else if (dB < THRESHOLDS_DB[2]) label = "Loud 🔊";
+
+  // -------- Output --------
+  #define DB_ONLY 1   // set to 0 for verbose output
+  #if DB_ONLY
+  Serial.print(dB, 1);
+  Serial.print(' ');
+  { static uint8_t __n; if (++__n >= 20) while (true) { delay(1000); } }  // stop after 20 measurements
+#else
+  Serial.print("Vrms=");      Serial.print(Vrms, 4);
+  Serial.print(" V, Mean=");  Serial.print(meanV, 3);
+  Serial.print(" V, Level=");
+  Serial.print(dB, 1);
+  Serial.print(" dB  →  ");
+  Serial.println(label);
+#endif
+
+
+  delay(500); // throttle console updates (sampling already takes time)
+}
